@@ -1,0 +1,6 @@
+Django==4.0
+django-apscheduler==0.7.0
+apscheduler==3.11.0
+pymysql==1.1.1
+requests==2.32.0
+beautifulsoup4==4.13.4

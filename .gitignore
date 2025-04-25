@@ -1,0 +1,8 @@
+.venv
+.idea
+uploads/*
+tmp
+*.log
+__pycache__
+.DS_Store
+venv
