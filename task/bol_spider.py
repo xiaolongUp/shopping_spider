@@ -5,11 +5,12 @@ import random
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import urllib3
 from bs4 import BeautifulSoup
+from django.utils import timezone
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import stealth_sync
 
@@ -31,7 +32,7 @@ bol_level_1_classify = {"Boeken": "/{}/nl/menu/categories/subMenu/1",
                         "Mooi & Gezond": "/{}/nl/menu/categories/subMenu/6",
                         "Kleding, Schoenen & Accessoires": "/{}/nl/menu/categories/subMenu/7",
                         "Sport, Outdoor & Reizen": "/{}/nl/menu/categories/subMenu/8",
-                        "Kantoor & School": "/nl/nl/menu/categories/subMenu/12",
+                        "Kantoor & School": "/{}/nl/menu/categories/subMenu/12",
                         "Eten & Drinken": "/{}/nl/menu/categories/subMenu/10",
                         "Wonen, Koken & Huishouden": "/{}/nl/menu/categories/subMenu/11",
                         "Klussen, Tuin & Dier": "/{}/nl/menu/categories/subMenu/9",
@@ -247,12 +248,14 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                 level_3_href = level_3.get('level_3_href')
                 leve_3_name = level_3.get('leve_3_name')
                 # 默认按照热销排序
-                page_url = BASE_URL + level_3_href + '?sort=popularity1'
-                page_size = 0
+                page_size = 1
                 # 只爬取100页
-                # while page_size < 100:
                 product_sort = 0
-                while page_size < 1:
+                while page_size <= 100:
+                    if page_size == 1:
+                        page_url = BASE_URL + level_3_href + '?sort=popularity1'
+                    else:
+                        page_url = BASE_URL + level_3_href + f'?sort=popularity1&page={page_size}'
                     # 商品页有反扒, 这里可以headless=True，但是bol更容易检测，建议调试先开着，args参数：减少被网站检测为自动化工具（如爬虫）的概率
                     page = context.new_page()
                     # 拦截所有请求并应用自定义 headers
@@ -294,7 +297,7 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                             product_a = li.find('a', class_='product-image')
                             product_url = product_a.get('href')
                             logger.info(f'product_url: {product_url}')
-                            product_main_image = product_a.find_all('img')[0].get('src')
+
                             product_url = BASE_URL + product_url
                             product_page = context.new_page()
                             try:
@@ -305,73 +308,48 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
 
                                 handle_popup_if_present(product_page,
                                                         'div.modal__window.js_modal_window[role="dialog"]')
-                                mouse_move(product_page)
+                                # mouse_move(product_page)
                                 # 等待关键元素 + 随机滚动
                                 product_page.wait_for_selector('#mainContent', timeout=3000)
                                 viewport_size = product_page.viewport_size
                                 height = viewport_size['height']
-                                smooth_scroll(product_page, height)
+                                smooth_scroll(page=product_page, total_distance=random.randint(600, height))
 
                                 product = ProductInfo(platform='bol', city=city,
                                                       platform_product_id=product_url,
                                                       collect_time=datetime.now(), product_url=product_url,
                                                       category_list=category_name,
-                                                      ranking=product_sort, product_image=product_main_image,
+                                                      ranking=product_sort,
                                                       level_1_classify=level_1_name, currency='EUR',
-                                                      level_2_classify=level_2_name, level_3_classify=leve_3_name)
+                                                      level_2_classify=level_2_name, level_3_classify=leve_3_name,
+                                                      create_time=datetime.now(), update_time=datetime.now())
                                 # 获取页面内容
                                 product_html = product_page.content()
                                 soup = BeautifulSoup(product_html, 'html.parser')
-                                # 解析产品标题
-                                product_title_h1 = soup.find_all('h1', class_='page-heading')
-                                product_title_span = product_title_h1[0].find_all('span', class_='u-mr--xs')
-                                product.title = product_title_span[0].get_text()
-                                # 解析描述详情
-                                description_div = soup.find('div', attrs={'data-test': 'description'},
-                                                            class_='product-description')
-                                description_p_list = description_div.find_all('p')
-                                description = ''
-                                for desc_p in description_p_list:
-                                    description = description + desc_p.get_text()
-                                product.desc = description
-                                image_ol_div = soup.find('div', class_='filmstrip-viewport')
-                                if image_ol_div:
-                                    image_ol = image_ol_div.find('ol', class_='filmstrip')
-                                    image_li_list = image_ol.find_all('li')
-                                    # 设置所有的图片
-                                    for i, li in enumerate(image_li_list[:10]):
-                                        image_url = li.find_all('img')[0].get('src')
-                                        setattr(product, f'image_{i + 1}', image_url)
-                                # 设置评论
-                                comment_div = soup.find('div', class_='reviews-summary__avg-score')
-                                comment_num_div = soup.find('div', class_='reviews-summary__total-reviews')
-                                if comment_div is not None:
-                                    product.grade = Decimal(comment_div.get_text().strip().replace(",", "."))
-                                if comment_num_div is not None:
-                                    num_text = comment_num_div.get_text()
-                                    # 使用正则提取所有数字
-                                    numbers = re.findall(r'\d+', num_text)
-                                    if len(numbers) > 0:
-                                        product.comment_num = int(numbers[0])
-                                # 设置价格
-                                price_span = soup.find('span', class_='promo-price')
-                                if price_span is not None:
-                                    round_price = price_span.get_text()
-                                    price_list = re.findall(r'\d+', round_price)
-                                    if price_list:
-                                        if len(price_list) == 1:
-                                            price = str(price_list[0]).strip() + '.00'
-                                        elif len(price_list) == 2:
-                                            price = str(price_list[0]).strip() + '.' + str(price_list[1]).strip()
-                                        logger.info(f'price: {price}')
-                                        product.price = Decimal(price)
-                                    else:
-                                        logger.error('can not parser price_list span')
+                                # 遍历是否有多sku
+                                # sku_options = soup.find('div', class_='feature-options')
+                                # 等待目标父容器加载
+                                sku_options = soup.find('div', class_='feature-options')
+                                if sku_options:
+                                    # sku 分为下拉选形式的，和单选形式的
+                                    # 1.单选形式处理
+                                    sku_single_choice = product_page.locator("div.feature-options a.feature-option")
+                                    if sku_single_choice:
+                                        parse_sku_options(sku_single_choice, product, context)
+                                    # 2.下拉选形式处理
+                                    sku_list = product_page.locator("div.feature-options a.feature-list__item")
+                                    if sku_list:
+                                        parse_sku_list(sku_list, product, context)
                                 else:
-                                    logger.error('can not parser price span')
-                                # 在主线程中调用保存操作，同步保存会报错
-                                threading.Thread(target=save_product, args=(product,)).start()
-                                time.sleep(random.uniform(1, 3))
+                                    parse_brand(soup, product)
+                                    parse_product_ean(product_page, product)
+                                    product_main_image = soup.find('img',
+                                                                   attrs={'data-test': 'product-main-image'}).get(
+                                        'src')
+                                    product.product_image = product_main_image
+                                    parse_discount_price(soup)
+                                    original_price = parse_discount_price(soup)
+                                    parse_product(product, soup, original_price)
                             except Exception as e:
                                 logger.error(f'parse product error:{e}')
                             finally:
@@ -384,8 +362,207 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                     finally:
                         page.close()
                         pass
-                page_size += 1
+                    page_size += 1
             browser.close()
+
+
+def parse_brand(soup, product):
+    """设置产品品牌"""
+    brand = soup.find("div", attrs={'data-test': 'brand'})
+    if not brand:
+        return
+    brand_a = brand.find('a', attrs={'data-role': 'BRAND'})
+    if not brand_a:
+        return
+    brand = brand_a.get_text()
+    product.brand = brand
+
+
+def parse_sku_list(sku_list, product, context):
+    """处理list项sku"""
+    sku_count = sku_list.count()
+    for i in range(sku_count):
+        try:
+            # 点击刷新页面，需获取刷新后的页面的数据
+            sku = sku_list.nth(i)
+            # 使用 CSS 选择器获取内部 span（基于 DOM 层级）
+            text_span = sku.query_selector('.feature-list__text span')
+            sku_name = text_span.inner_text()
+            product.sku = sku_name
+            sku_url = sku.get_attribute('href')
+            sku_page = context.new_page()
+            sku_page_url = BASE_URL + sku_url
+            sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
+            # 等待关键元素 + 随机滚动
+            sku_page.wait_for_selector('#mainContent', timeout=3000)
+            value = random.choice([True, False])
+            if value:
+                viewport_size = sku_page.viewport_size
+                height = viewport_size['height']
+                smooth_scroll(page=sku_page, total_distance=random.randint(600, height))
+            sku_html = sku_page.content()
+            sku_soup = BeautifulSoup(sku_html, 'html.parser')
+
+            product_main_image = sku_soup.find('img',
+                                               attrs={
+                                                   'data-test': 'product-main-image'}).get(
+                'src')
+            parse_brand(sku_soup, product)
+            parse_product_ean(sku_page, product)
+            product.product_image = product_main_image
+            original_price = parse_discount_price(sku_soup)
+            parse_product(product, sku_soup, original_price)
+        except Exception as e:
+            logger.error(f'sku page parser error:{e}')
+        finally:
+            sku_page.close()
+
+
+def parse_product_ean(page, product):
+    """解析产品信息的ean"""
+    # 找到 EAN 的 h3 元素
+    ean_header = page.locator("h3", has_text="EAN")
+    if not ean_header:
+        return
+    # 获取其父 div.specs 元素
+    specs_div = ean_header.locator("xpath=..")  # 向上一级
+    if not specs_div:
+        return
+        # 找到 div 中的 dl
+    dl_element = specs_div.locator("dl.specs__list")
+    dd_element = dl_element.locator("dd").first
+    if not dd_element:
+        return
+    ean = dd_element.inner_text()
+    product.ean = ean
+
+
+def parse_sku_options(sku_list, product, context):
+    """处理单选项sku"""
+    sku_count = sku_list.count()
+    for i in range(sku_count):
+        try:
+            # 点击刷新页面，需获取刷新后的页面的数据
+            sku = sku_list.nth(i)
+            sku.hover()
+            time.sleep(random.uniform(0.5, 1.5))  # 给点缓冲时间
+            # sku.click()
+
+            sku_name = sku.get_attribute("title")
+            if not sku_name:
+                sku_name = sku.get_attribute("data-test")
+            product.sku = sku_name
+            sku_url = sku.get_attribute('href')
+            sku_page = context.new_page()
+            sku_page_url = BASE_URL + sku_url
+            sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
+            # 等待关键元素 + 随机滚动
+            sku_page.wait_for_selector('#mainContent', timeout=3000)
+            value = random.choice([True, False])
+            if value:
+                viewport_size = sku_page.viewport_size
+                height = viewport_size['height']
+                smooth_scroll(page=sku_page, total_distance=random.randint(600, height))
+            sku_html = sku_page.content()
+            sku_soup = BeautifulSoup(sku_html, 'html.parser')
+
+            product_main_image = sku_soup.find('img',
+                                               attrs={
+                                                   'data-test': 'product-main-image'}).get(
+                'src')
+            parse_brand(sku_soup, product)
+            parse_product_ean(sku_page, product)
+            product.product_image = product_main_image
+            original_price = parse_discount_price(sku_soup)
+            parse_product(product, sku_soup, original_price)
+        except Exception as e:
+            logger.error(f'sku page parser error:{e}')
+        finally:
+            sku_page.close()
+
+
+def parse_discount_price(soup):
+    """处理折扣信息"""
+    try:
+        discount_div = soup.find('div', class_='ab-discount')
+        if discount_div:
+            original_price = discount_div.find('del').get_text()
+            price_list = re.findall(r'\d+', original_price)
+            if len(price_list) == 1:
+                original_price = str(price_list[0]).strip() + '.00'
+            elif len(price_list) == 2:
+                original_price = str(price_list[0]).strip() + '.' + str(price_list[1]).strip()
+            else:
+                return None
+            logger.info(f'original price: {original_price}')
+            price = Decimal(original_price)
+            return price
+        return None
+    except Exception as e:
+        logger.error(f"parse_discount_price :{e}")
+        return None
+
+
+def parse_product(product, soup, original_price):
+    # 解析产品标题
+    product_title_h1 = soup.find_all('h1', class_='page-heading')
+    product_title_span = product_title_h1[0].find_all('span', class_='u-mr--xs')
+    product.title = product_title_span[0].get_text()
+    # 解析描述详情
+    description_div = soup.find('div', attrs={'data-test': 'description'},
+                                class_='product-description')
+    description_p_list = description_div.find_all('p')
+    description = ''
+    for desc_p in description_p_list:
+        description = description + desc_p.get_text()
+    product.desc = description
+    image_ol_div = soup.find('div', class_='filmstrip-viewport')
+    if image_ol_div:
+        image_ol = image_ol_div.find('ol', class_='filmstrip')
+        image_li_list = image_ol.find_all('li')
+        # 设置所有的图片
+        for i, li in enumerate(image_li_list[:10]):
+            image_url = li.find_all('img')[0].get('src')
+            setattr(product, f'image_{i + 1}', image_url)
+    # 设置评论
+    comment_div = soup.find('div', class_='reviews-summary__avg-score')
+    comment_num_div = soup.find('div', class_='reviews-summary__total-reviews')
+    if comment_div is not None:
+        product.grade = Decimal(comment_div.get_text().strip().replace(",", "."))
+    if comment_num_div is not None:
+        num_text = comment_num_div.get_text()
+        # 使用正则提取所有数字
+        numbers = re.findall(r'\d+', num_text)
+        if len(numbers) > 0:
+            product.comment_num = int(numbers[0])
+    # 设置价格
+    price_span = soup.find('span', class_='promo-price')
+    if price_span is not None:
+        round_price = price_span.get_text()
+        price_list = re.findall(r'\d+', round_price)
+        if price_list:
+            if len(price_list) == 1:
+                price = str(price_list[0]).strip() + '.00'
+            elif len(price_list) == 2:
+                price = str(price_list[0]).strip() + '.' + str(price_list[1]).strip()
+            logger.info(f'price: {price}')
+            product.price = Decimal(price)
+            if original_price:
+                product.original_price = original_price
+                product.discount = Decimal(original_price) - Decimal(price)
+        else:
+            product.price = None
+            product.original_price = None
+            product.discount = None
+            logger.error('can not parser price_list span')
+    else:
+        product.price = None
+        product.original_price = None
+        product.discount = None
+        logger.warning('can not parser price span')
+    # 在主线程中调用保存操作，同步保存会报错
+    threading.Thread(target=save_product, args=(product,)).start()
+    time.sleep(random.uniform(1, 3))
 
 
 def stop_on_refresh(page, target_url):
@@ -400,8 +577,17 @@ def stop_on_refresh(page, target_url):
 
 
 def save_product(product):
+    three_days_ago = timezone.now() - timedelta(days=3)
+
     """通过异步线程去保存，同步保存会报错"""
     try:
+        product.pk = None
+        exist_record = ProductInfo.objects.filter(platform_product_id=product.platform_product_id,
+                                                  sku=product.sku,
+                                                  create_time__gte=three_days_ago).first()
+        if exist_record:
+            logger.warning(f'product record has save three day before, not need save again!')
+            return
         product.save()
     except Exception as e:
         logger.error(f'product save error: {e}')
