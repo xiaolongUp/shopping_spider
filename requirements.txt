@@ -4,3 +4,6 @@ apscheduler==3.11.0
 pymysql==1.1.1
 requests==2.32.0
 beautifulsoup4==4.13.4
+playwright~=1.51.0
+httpx~=0.28.1
+selenium~=4.31.0

@@ -14,7 +14,6 @@ import os
 import sys
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -117,21 +116,28 @@ LOGGING = {
         'file': {
             'level': 'INFO',
             'class': 'logging.FileHandler',
-            'filename': os.path.join(BASE_DIR, 'debug.log'),  # 日志输出文件
+            'filename': os.path.join(BASE_DIR, 'debug.log'),
             'formatter': 'standard',
-            'mode': 'a',  # 追加模式
+            'mode': 'a',
         }
     },
-    "root": {"level": "INFO", "handlers": ["console", 'file']},
+    # 根日志器：控制所有未单独配置的日志器
+    'root': {
+        'level': 'INFO',
+        'handlers': ['console', 'file'],  # 全局默认输出到控制台和文件
+    },
     'loggers': {
+        # 针对 Django 框架的日志
         'django': {
-            'handlers': ['console', 'file'],
             'level': 'INFO',
-            'propagate': False,
+            'handlers': [],  # 清空处理器，完全依赖 root 日志器
+            'propagate': True,  # 必须为 True，否则会阻断日志传递到 root
         },
+        # 数据库查询日志（单独控制）
         'django.db.backends': {
-            'level': 'DEBUG',
-            'handlers': ['console'],
+            'level': 'DEBUG',  # DEBUG 级别以显示 SQL 查询
+            'handlers': ['console'],  # 只输出到控制台，不写入文件
+            'propagate': False,  # 阻止传递到 root，避免重复
         },
     },
 }
