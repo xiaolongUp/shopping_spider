@@ -51,7 +51,7 @@ def start_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         bol_spider_data,
-        args=['Kantoor & School', '/{}/nl/menu/categories/subMenu/12', 'nl'],
+        args=['Zwanger, Baby & Peuter', '/{}/nl/menu/categories/subMenu/5', 'nl'],
         trigger=IntervalTrigger(days=30),
         next_run_time=datetime.now()
     )

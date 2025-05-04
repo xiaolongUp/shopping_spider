@@ -251,7 +251,7 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                 page_size = 1
                 # 只爬取100页
                 product_sort = 0
-                while page_size <= 100:
+                while page_size <= 1:
                     if page_size == 1:
                         page_url = BASE_URL + level_3_href + '?sort=popularity1'
                     else:
@@ -334,11 +334,11 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                                     # sku 分为下拉选形式的，和单选形式的
                                     # 1.单选形式处理
                                     sku_single_choice = product_page.locator("div.feature-options a.feature-option")
-                                    if sku_single_choice:
+                                    if sku_single_choice and sku_single_choice.count() > 0:
                                         parse_sku_options(sku_single_choice, product, context)
                                     # 2.下拉选形式处理
                                     sku_list = product_page.locator("div.feature-options a.feature-list__item")
-                                    if sku_list:
+                                    if sku_list and sku_list.count() > 0:
                                         parse_sku_list(sku_list, product, context)
                                 else:
                                     parse_brand(soup, product)
@@ -418,25 +418,6 @@ def parse_sku_list(sku_list, product, context):
             sku_page.close()
 
 
-def parse_product_ean(page, product):
-    """解析产品信息的ean"""
-    # 找到 EAN 的 h3 元素
-    ean_header = page.locator("h3", has_text="EAN")
-    if not ean_header:
-        return
-    # 获取其父 div.specs 元素
-    specs_div = ean_header.locator("xpath=..")  # 向上一级
-    if not specs_div:
-        return
-        # 找到 div 中的 dl
-    dl_element = specs_div.locator("dl.specs__list")
-    dd_element = dl_element.locator("dd").first
-    if not dd_element:
-        return
-    ean = dd_element.inner_text()
-    product.ean = ean
-
-
 def parse_sku_options(sku_list, product, context):
     """处理单选项sku"""
     sku_count = sku_list.count()
@@ -446,9 +427,20 @@ def parse_sku_options(sku_list, product, context):
             sku = sku_list.nth(i)
             sku.hover()
             time.sleep(random.uniform(0.5, 1.5))  # 给点缓冲时间
-            # sku.click()
 
             sku_name = sku.get_attribute("title")
+
+            sku_class = sku.get_attribute("class")
+            if "feature-option--btn" in sku_class:
+                sku_name = sku.get_attribute("title")
+            if "feature-option--image" in sku_class:
+                try:
+                    sku_image = sku.locator("img")
+                    if sku_image:
+                        alt_text = sku_image.get_attribute("alt")
+                        sku_name = alt_text
+                except Exception as e:
+                    logger.warning(f'sku image not exist: {e}')
             if not sku_name:
                 sku_name = sku.get_attribute("data-test")
             product.sku = sku_name
@@ -479,6 +471,25 @@ def parse_sku_options(sku_list, product, context):
             logger.error(f'sku page parser error:{e}')
         finally:
             sku_page.close()
+
+
+def parse_product_ean(page, product):
+    """解析产品信息的ean"""
+    # 找到 EAN 的 h3 元素
+    ean_header = page.locator("h3", has_text="EAN")
+    if not ean_header:
+        return
+    # 获取其父 div.specs 元素
+    specs_div = ean_header.locator("xpath=..")  # 向上一级
+    if not specs_div:
+        return
+        # 找到 div 中的 dl
+    dl_element = specs_div.locator("dl.specs__list")
+    dd_element = dl_element.locator("dd").first
+    if not dd_element:
+        return
+    ean = dd_element.inner_text()
+    product.ean = ean
 
 
 def parse_discount_price(soup):
