@@ -251,7 +251,7 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                 page_size = 1
                 # 只爬取100页
                 product_sort = 0
-                while page_size <= 1:
+                while page_size <= 100:
                     if page_size == 1:
                         page_url = BASE_URL + level_3_href + '?sort=popularity1'
                     else:
