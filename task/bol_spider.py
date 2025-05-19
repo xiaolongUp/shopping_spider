@@ -15,6 +15,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from playwright_stealth import stealth_sync
 
 from task.models import ProductInfo
+from task.parse_execl import BolCategory
 
 logger = logging.getLogger(__name__)
 
@@ -50,100 +51,6 @@ DEFAULT_HEADERS = {
 }
 
 
-# url = BASE_URL.format(city)
-# proxy = urllib3.ProxyManager(PROXY_URL)
-# response = proxy.request(method="GET", url=url, headers=headers)
-# print(response.status)
-# # response = requests.get(url, headers=headers, proxies=proxies)
-# # if response.status_code != 200:
-# #     print(response.text)
-# #     return
-# soup = BeautifulSoup(response.text, 'html.parser')
-# button = soup.find('button', id_='radix-:Rotar5:-trigger-categories')
-# # 获取button之后的所有同级div
-# sibling_divs = button.find_next_siblings('div')
-# category_first_div = sibling_divs[0]
-# a_list = category_first_div.find_all('a')
-# for a in a_list:
-#     href_id = a.get("href")
-#     print(href_id)
-
-#
-# async def parser_page_product(product_search_url: str, city: str, product_sort: int, level_1_name, level_2_name,
-#                               leve_3_name, category_name, product_main_image):
-#     """这个方法只执行一次，为了拿到所有的一级菜单"""
-#     product_url = BASE_URL + product_search_url
-#     # 商品详情有反扒
-#     async with sync_playwright() as p:
-#         browser = await p.chromium.launch(headless=False)  # 这里可以headless=True，但是bol更容易检测，建议调试先开着
-#         context = await browser.new_context()
-#         page = await context.new_page()
-#         # 应用 stealth（关键！！！）
-#         await stealth_sync(page)
-#         try:
-#             # 访问页面
-#             await page.goto(product_url, timeout=random.randint(10000, 20000))
-#             # 增加等待页面加载完成
-#             await page.wait_for_load_state('networkidle')
-#             # 有时会弹窗，先处理弹窗
-#             handle_popup_if_present(page, "div.modal__window__content.js_modal_content")
-#             # 等待关键元素 + 随机滚动
-#             page.wait_for_selector('#mainContent', timeout=3000)
-#             for _ in range(random.randint(2, 4)):
-#                 page.mouse.wheel(0, random.randint(300, 800))
-#                 time.sleep(random.uniform(0.5, 1.5))
-#             product = ProductInfo(platform='bol', city=city, platform_product_id=product_search_url,
-#                                   collect_time=datetime.now(), product_url=product_url, category_list=category_name,
-#                                   ranking=product_sort, product_image=product_main_image, level_1_classify=level_1_name,
-#                                   level_2_classify=level_2_name, level_3_classify=leve_3_name)
-#             # 获取页面内容
-#             html = page.content()
-#             soup = BeautifulSoup(html, 'html.parser')
-#             # 解析产品标题
-#             product_title_h1 = soup.find_all('h1', class_='page-heading')
-#             product_title_span = product_title_h1[0].find_all('span', class_='u-mr--xs')
-#             product.title = product_title_span[0].get_text()
-#             # 解析描述详情
-#             description_div = soup.find('div', attrs={'data-test': 'description'}, class_='product-description')
-#             description_p_list = description_div.find_all('p')
-#             description = ''
-#             for desc_p in description_p_list:
-#                 description = description + desc_p.get_text()
-#             product.desc = description
-#             image_ol = soup.find_all('ol', class_='filmstrip ')[0]
-#             image_li_list = image_ol.find_all('li')
-#             # 设置所有的图片
-#             for i, li in enumerate(image_li_list[1:11], start=1):
-#                 image_url = li.find_all('img')[0].get('src')
-#                 setattr(product, f'image_{i}', image_url)
-#             # 设置评论
-#             comment_div = soup.find('div', class_='reviews-summary__avg-score')
-#             comment_num_div = soup.find('div', class_='reviews-summary__total-reviews')
-#             if comment_div is not None:
-#                 product.grade = Decimal(comment_div.get_text())
-#             if comment_num_div is not None:
-#                 num_text = comment_num_div.get_text()
-#                 # 使用正则提取所有数字
-#                 numbers = re.findall(r'\d+', num_text)
-#                 if len(numbers) > 0:
-#                     product.comment_num = int(numbers[0])
-#             # 设置价格
-#             price_span = soup.find('span', class_='promo-price')
-#             if price_span is not None:
-#                 round_price = price_span.get_text()
-#                 fraction = price_span.find('sup', class_='promo-price__fraction')
-#                 if fraction is not None:
-#                     price = round_price + '.' + fraction.get_text()
-#                 else:
-#                     price = round_price + '.00'
-#                 product.price = Decimal(price)
-#             product.save()
-#         except Exception as e:
-#             logger.error(f"Error: {e}")
-#             page.screenshot(path="linux_error.png")
-#         finally:
-#             await browser.close()
-
 def handle_route(route, request):
     # 复制原始请求头并设置自定义 header
     headers = request.headers.copy()
@@ -174,14 +81,41 @@ def create_route_handler(cookie_header):
     return handle_route
 
 
-def spider_data(level_1_name: str, level_1_url: str, city: str):
+def spider_data(level_1_name: str, level_2_name: str, level_3_name: str, city: str):
+    list_categories = BolCategory.traverse_categories("../bol类目.xlsx")
+
+    need_spider_category = []
+    if not level_1_name:
+        need_spider_category = list_categories
+    else:
+        for category in list_categories:
+            if level_1_name and level_1_name == category.level1:
+                need_spider_category.append(category)
+
+    if level_2_name:
+        need_spider_category = list(filter(lambda x: x.level2 == level_2_name, need_spider_category))
+    if level_3_name:
+        need_spider_category = list(filter(lambda x: x.level3 == level_3_name, need_spider_category))
+    if not need_spider_category:
+        return
+    for category in list_categories:
+        level_1_url = bol_level_1_classify.get(category.level1)
+        level_1_spider_category = list(filter(lambda x: x.level1 == category.level1, need_spider_category))
+        if not level_1_url:
+            return
+        if not level_1_spider_category:
+            return
+        spider_category_data(level_1_url, category.level1, level_1_spider_category, city)
+
+
+def spider_category_data(level_1_url: str, level_1_name: str, level_1_spider_category: list, city: str):
+    """根据一级分类，爬取一级分类下可用的二级分类，三级分类"""
     # 顶级类目分类
     level_2_and_level_3_map = {}
     # 设置请求头，模拟浏览器访问
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
-    # 家居装饰和家具
     url = BASE_URL + level_1_url.format(city)
     proxy = urllib3.ProxyManager(PROXY_URL)
     response = proxy.request(method="GET", url=url, headers=headers)
@@ -210,6 +144,11 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                 leve_3_list.append({'leve_3_name': leve_3_name, 'level_3_href': level_3_href})
         level_2_and_level_3_map[level_2_name] = leve_3_list
     for level_2_name, level_3_list in level_2_and_level_3_map.items():
+        for category in level_1_spider_category:
+            if category.level2 != level_2_name:
+                continue
+            if category.level3 not in level_3_list:
+                continue
         # 模拟打开浏览器，使用代理
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=False,
@@ -246,12 +185,12 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
             cookie_page.wait_for_timeout(2000)
             for level_3 in level_3_list:
                 level_3_href = level_3.get('level_3_href')
-                leve_3_name = level_3.get('leve_3_name')
+                level_3_name = level_3.get('leve_3_name')
                 # 默认按照热销排序
                 page_size = 1
                 # 只爬取100页
                 product_sort = 0
-                while page_size <= 100:
+                while page_size <= 1:
                     if page_size == 1:
                         page_url = BASE_URL + level_3_href + '?sort=popularity1'
                     else:
@@ -277,84 +216,26 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                         page.wait_for_load_state("networkidle")
                         # 有时会弹窗，先处理弹窗
                         handle_popup_if_present(page, 'body.modal--is-open')
-                        # 等待关键元素 + 随机滚动
-                        page_div = page.wait_for_selector('#js_list_view', timeout=random.randint(10000, 20000))
-                        if not page_div:
-                            continue
-                        # 获取页面内容
-                        html = page.content()
-                        # page.close() 最后在关闭，此时不要关闭
-                        if not html:
-                            continue
-                        smooth_scroll(page)
-                        soup = BeautifulSoup(html, 'html.parser')
-                        category_name = soup.find_all('h1', class_='h1 bol_header')[0].get_text()
-                        product_ul = soup.find_all('ul', class_='product-list')
-                        product_li = product_ul[0].find_all('li', class_='product-item--row')
-                        for li in product_li:
-                            li.get('data-id')
-                            li.get('data-bltgi')
-                            product_a = li.find('a', class_='product-image')
-                            product_url = product_a.get('href')
-                            logger.info(f'product_url: {product_url}')
-
-                            product_url = BASE_URL + product_url
-                            product_page = context.new_page()
-                            try:
-                                # 访问页面
-                                product_page.goto(product_url, wait_until="load", timeout=random.randint(10000, 20000))
-                                # # 增加等待页面加载完成
-                                # product_page.wait_for_load_state('networkidle')
-
-                                handle_popup_if_present(product_page,
-                                                        'div.modal__window.js_modal_window[role="dialog"]')
-                                # mouse_move(product_page)
-                                # 等待关键元素 + 随机滚动
-                                product_page.wait_for_selector('#mainContent', timeout=3000)
-                                viewport_size = product_page.viewport_size
-                                height = viewport_size['height']
-                                smooth_scroll(page=product_page, total_distance=random.randint(600, height))
-
-                                product = ProductInfo(platform='bol', city=city,
-                                                      platform_product_id=product_url,
-                                                      collect_time=datetime.now(), product_url=product_url,
-                                                      category_list=category_name,
-                                                      ranking=product_sort,
-                                                      level_1_classify=level_1_name, currency='EUR',
-                                                      level_2_classify=level_2_name, level_3_classify=leve_3_name,
-                                                      create_time=datetime.now(), update_time=datetime.now())
-                                # 获取页面内容
-                                product_html = product_page.content()
-                                soup = BeautifulSoup(product_html, 'html.parser')
-                                # 遍历是否有多sku
-                                # sku_options = soup.find('div', class_='feature-options')
-                                # 等待目标父容器加载
-                                sku_options = soup.find('div', class_='feature-options')
-                                if sku_options:
-                                    # sku 分为下拉选形式的，和单选形式的
-                                    # 1.单选形式处理
-                                    sku_single_choice = product_page.locator("div.feature-options a.feature-option")
-                                    if sku_single_choice and sku_single_choice.count() > 0:
-                                        parse_sku_options(sku_single_choice, product, context)
-                                    # 2.下拉选形式处理
-                                    sku_list = product_page.locator("div.feature-options a.feature-list__item")
-                                    if sku_list and sku_list.count() > 0:
-                                        parse_sku_list(sku_list, product, context)
-                                else:
-                                    parse_brand(soup, product)
-                                    parse_product_ean(product_page, product)
-                                    product_main_image = soup.find('img',
-                                                                   attrs={'data-test': 'product-main-image'}).get(
-                                        'src')
-                                    product.product_image = product_main_image
-                                    parse_discount_price(soup)
-                                    original_price = parse_discount_price(soup)
-                                    parse_product(product, soup, original_price)
-                            except Exception as e:
-                                logger.error(f'parse product error:{e}')
-                            finally:
-                                product_page.close()
-                            product_sort += 1
+                        # 1.等待关键元素 + 随机滚动，三级菜单下还有菜单，此时
+                        # 等待并获取符合属性模式的 div，然后选择其下的第一个 a 标签
+                        selector = 'div[data-bltgg$=".storefrontCircleHeroSlot_storefrontCircleHeroGroup"]'
+                        div_element = page.wait_for_selector(selector, timeout=30000)
+                        if div_element:
+                            all_a = div_element.query_selector_all("a")
+                            # 名称
+                            if not all_a:
+                                continue
+                            a_element = all_a[0]
+                            a_element_name = a_element.inner_text()
+                            a_element_url = a_element.get_attribute('href')
+                            page_url = BASE_URL + a_element_url
+                            parse_product_page(page, context, product_sort, city, level_1_name, level_2_name,
+                                               level_3_name)
+                        else:
+                            # 2.等待关键元素 + 随机滚动，三级菜单下直接就是商品列表数据
+                            page_div = page.wait_for_selector('#js_list_view', timeout=random.randint(10000, 20000))
+                            if not page_div:
+                                continue
                     except PlaywrightTimeoutError as e:
                         logger.error(f"wait page timeout or element not exist: {e}")
                     except Exception as e:
@@ -363,7 +244,84 @@ def spider_data(level_1_name: str, level_1_url: str, city: str):
                         page.close()
                         pass
                     page_size += 1
-            browser.close()
+            # browser.close()
+
+
+def parse_product_page(page, context, product_sort, city, level_1_name, level_2_name, level_3_name):
+    # 获取页面内容
+    html = page.content()
+    # page.close() 最后在关闭，此时不要关闭
+    if not html:
+        return
+    smooth_scroll(page)
+    soup = BeautifulSoup(html, 'html.parser')
+    category_name = soup.find_all('h1', class_='h1 bol_header')[0].get_text()
+    product_ul = soup.find_all('ul', class_='product-list')
+    product_li = product_ul[0].find_all('li', class_='product-item--row')
+    for li in product_li:
+        li.get('data-id')
+        li.get('data-bltgi')
+        product_a = li.find('a', class_='product-image')
+        product_url = product_a.get('href')
+        logger.info(f'product_url: {product_url}')
+
+        product_url = BASE_URL + product_url
+        product_page = context.new_page()
+        try:
+            # 访问页面
+            product_page.goto(product_url, wait_until="load", timeout=random.randint(10000, 20000))
+            # # 增加等待页面加载完成
+            # product_page.wait_for_load_state('networkidle')
+
+            handle_popup_if_present(product_page,
+                                    'div.modal__window.js_modal_window[role="dialog"]')
+            # mouse_move(product_page)
+            # 等待关键元素 + 随机滚动
+            product_page.wait_for_selector('#mainContent', timeout=3000)
+            viewport_size = product_page.viewport_size
+            height = viewport_size['height']
+            smooth_scroll(page=product_page, total_distance=random.randint(600, height))
+
+            product = ProductInfo(platform='bol', city=city,
+                                  platform_product_id=product_url,
+                                  collect_time=datetime.now(), product_url=product_url,
+                                  category_list=category_name,
+                                  ranking=product_sort,
+                                  level_1_classify=level_1_name, currency='EUR',
+                                  level_2_classify=level_2_name, level_3_classify=level_3_name,
+                                  create_time=datetime.now(), update_time=datetime.now())
+            # 获取页面内容
+            product_html = product_page.content()
+            soup = BeautifulSoup(product_html, 'html.parser')
+            # 遍历是否有多sku
+            # sku_options = soup.find('div', class_='feature-options')
+            # 等待目标父容器加载
+            sku_options = soup.find('div', class_='feature-options')
+            if sku_options:
+                # sku 分为下拉选形式的，和单选形式的
+                # 1.单选形式处理
+                sku_single_choice = product_page.locator("div.feature-options a.feature-option")
+                if sku_single_choice and sku_single_choice.count() > 0:
+                    parse_sku_options(sku_single_choice, product, context)
+                # 2.下拉选形式处理
+                sku_list = product_page.locator("div.feature-options a.feature-list__item")
+                if sku_list and sku_list.count() > 0:
+                    parse_sku_list(sku_list, product, context)
+            else:
+                parse_brand(soup, product)
+                parse_product_ean(product_page, product)
+                product_main_image = soup.find('img',
+                                               attrs={'data-test': 'product-main-image'}).get(
+                    'src')
+                product.product_image = product_main_image
+                parse_discount_price(soup)
+                original_price = parse_discount_price(soup)
+                parse_product(product, soup, original_price)
+        except Exception as e:
+            logger.error(f'parse product error:{e}')
+        finally:
+            product_page.close()
+        product_sort += 1
 
 
 def parse_brand(soup, product):

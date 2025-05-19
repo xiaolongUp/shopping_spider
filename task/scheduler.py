@@ -5,7 +5,6 @@ from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from asgiref.sync import sync_to_async
 
 from task.bol_spider import spider_data as bol_spider_data
 
@@ -51,7 +50,7 @@ def start_scheduler():
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         bol_spider_data,
-        args=['Zwanger, Baby & Peuter', '/{}/nl/menu/categories/subMenu/5', 'nl'],
+        args=['Speelgoed, Hobby & Feest', 'Speelgoed', 'Alles in Speelgoed', 'nl'],
         trigger=IntervalTrigger(days=30),
         next_run_time=datetime.now()
     )

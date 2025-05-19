@@ -7,3 +7,6 @@ beautifulsoup4==4.13.4
 playwright~=1.51.0
 httpx~=0.28.1
 selenium~=4.31.0
+asgiref~=3.8.1
+urllib3~=2.4.0
+openpyxl~=3.1.5
