@@ -11,6 +11,7 @@ from decimal import Decimal
 import urllib3
 from bs4 import BeautifulSoup
 from django.utils import timezone
+from playwright._impl._page import Page
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import stealth_sync
 
@@ -63,6 +64,13 @@ def handle_route(route, request):
 
     # 继续请求并带上新的 headers
     route.continue_(headers=headers)
+
+
+# 当任务处理失败时，默认的线程休眠时间
+DEFAULT_TIME_SLEEP = 30
+
+# 每次失败后线程休眠时间翻翻
+DEFAULT_ERROR_COUNT = 0
 
 
 def create_route_handler(cookie_header):
@@ -163,7 +171,7 @@ def spider_category_data(level_1_url: str, level_1_name: str, level_1_spider_cat
                 cookie_page.wait_for_load_state("networkidle")
                 cookie_page.wait_for_selector('body', timeout=10000)
                 dialog = cookie_page.wait_for_selector('div[role="dialog"]',
-                                                       timeout=random.randint(2000, 10000))
+                                                       timeout=random.randint(5000, 10000))
                 if dialog:
                     logger.info("dialog exist ,auto click button...")
                     buttons = dialog.query_selector_all("button")
@@ -190,11 +198,38 @@ def spider_category_data(level_1_url: str, level_1_name: str, level_1_spider_cat
                 page_size = 1
                 # 只爬取100页
                 product_sort = 0
+                # 判断下面一层是商品页，还是四级菜单
+                level4_page = context.new_page()
+                # 拦截所有请求并应用自定义 headers, 匹配所有请求
+                level4_page.route("**", create_route_handler(cookie_header))
+                stealth_sync(level4_page)
+                level4_page.goto(BASE_URL + level_3_href + '?sort=popularity1', wait_until="networkidle", timeout=30000)
+                # 有时会弹窗，先处理弹窗
+                handle_popup_if_present(level4_page, 'body.modal--is-open')
+                level4_element = None
+                try:
+                    selector = 'div[data-bltgg$=".storefrontCircleHeroSlot_storefrontCircleHeroGroup"]'
+                    level4_element = level4_page.wait_for_selector(selector, timeout=random.randint(5000, 8000))
+                except Exception as e:
+                    logger.error(f"no selector ,continue do process... {str(e)}")
+                if level4_element:
+                    all_a = level4_element.query_selector_all("a")
+                    # 名称
+                    if not all_a:
+                        continue
+                    a_element = all_a[0]
+                    logger.info(f'exist level4 menu {a_element.inner_text()}')
+                    a_element_url = a_element.get_attribute('href')
+                    base_page_url = BASE_URL + a_element_url
+                    level4_page.close()
+                else:
+                    # 2.等待关键元素 + 随机滚动，三级菜单下直接就是商品列表数据
+                    base_page_url = BASE_URL + level_3_href
                 while page_size <= 1:
                     if page_size == 1:
-                        page_url = BASE_URL + level_3_href + '?sort=popularity1'
+                        page_url = base_page_url + '?sort=popularity1'
                     else:
-                        page_url = BASE_URL + level_3_href + f'?sort=popularity1&page={page_size}'
+                        page_url = base_page_url + f'?sort=popularity1&page={page_size}'
                     # 商品页有反扒, 这里可以headless=True，但是bol更容易检测，建议调试先开着，args参数：减少被网站检测为自动化工具（如爬虫）的概率
                     page = context.new_page()
                     # 拦截所有请求并应用自定义 headers
@@ -216,26 +251,15 @@ def spider_category_data(level_1_url: str, level_1_name: str, level_1_spider_cat
                         page.wait_for_load_state("networkidle")
                         # 有时会弹窗，先处理弹窗
                         handle_popup_if_present(page, 'body.modal--is-open')
-                        # 1.等待关键元素 + 随机滚动，三级菜单下还有菜单，此时
-                        # 等待并获取符合属性模式的 div，然后选择其下的第一个 a 标签
-                        selector = 'div[data-bltgg$=".storefrontCircleHeroSlot_storefrontCircleHeroGroup"]'
-                        div_element = page.wait_for_selector(selector, timeout=30000)
-                        if div_element:
-                            all_a = div_element.query_selector_all("a")
-                            # 名称
-                            if not all_a:
-                                continue
-                            a_element = all_a[0]
-                            a_element_name = a_element.inner_text()
-                            a_element_url = a_element.get_attribute('href')
-                            page_url = BASE_URL + a_element_url
-                            parse_product_page(page, context, product_sort, city, level_1_name, level_2_name,
-                                               level_3_name)
-                        else:
-                            # 2.等待关键元素 + 随机滚动，三级菜单下直接就是商品列表数据
+                        # 2.等待关键元素 + 随机滚动，三级菜单下直接就是商品列表数据
+                        try:
                             page_div = page.wait_for_selector('#js_list_view', timeout=random.randint(10000, 20000))
-                            if not page_div:
-                                continue
+                        except Exception as e:
+                            time.sleep(DEFAULT_TIME_SLEEP)
+                        if not page_div:
+                            continue
+                        parse_product_page(page, context, product_sort, city, level_1_name, level_2_name,
+                                           level_3_name)
                     except PlaywrightTimeoutError as e:
                         logger.error(f"wait page timeout or element not exist: {e}")
                     except Exception as e:
@@ -271,7 +295,7 @@ def parse_product_page(page, context, product_sort, city, level_1_name, level_2_
             # 访问页面
             product_page.goto(product_url, wait_until="load", timeout=random.randint(10000, 20000))
             # # 增加等待页面加载完成
-            # product_page.wait_for_load_state('networkidle')
+            product_page.wait_for_load_state('networkidle')
 
             handle_popup_if_present(product_page,
                                     'div.modal__window.js_modal_window[role="dialog"]')
@@ -279,8 +303,9 @@ def parse_product_page(page, context, product_sort, city, level_1_name, level_2_
             # 等待关键元素 + 随机滚动
             product_page.wait_for_selector('#mainContent', timeout=3000)
             viewport_size = product_page.viewport_size
-            height = viewport_size['height']
-            smooth_scroll(page=product_page, total_distance=random.randint(600, height))
+            # height = viewport_size['height']
+            total_height = product_page.evaluate("document.documentElement.scrollHeight")
+            smooth_scroll(page=product_page, total_distance=random.randint(600, total_height))
 
             product = ProductInfo(platform='bol', city=city,
                                   platform_product_id=product_url,
@@ -296,17 +321,64 @@ def parse_product_page(page, context, product_sort, city, level_1_name, level_2_
             # 遍历是否有多sku
             # sku_options = soup.find('div', class_='feature-options')
             # 等待目标父容器加载
-            sku_options = soup.find('div', class_='feature-options')
-            if sku_options:
-                # sku 分为下拉选形式的，和单选形式的
-                # 1.单选形式处理
-                sku_single_choice = product_page.locator("div.feature-options a.feature-option")
-                if sku_single_choice and sku_single_choice.count() > 0:
-                    parse_sku_options(sku_single_choice, product, context)
-                # 2.下拉选形式处理
-                sku_list = product_page.locator("div.feature-options a.feature-list__item")
-                if sku_list and sku_list.count() > 0:
-                    parse_sku_list(sku_list, product, context)
+            # todo 需要解析不同的选择类型数据
+            sku_single_choice = None
+            sku_list = None
+            sku_span_all = None
+            # 1.文本按钮选择框处理
+            feature_group_buttons_text = soup.find('div', class_='feature-group',
+                                                   attrs={'data-test': 'feature-group-buttons-text'})
+            if feature_group_buttons_text:
+                feature_options_div = feature_group_buttons_text.find('div', class_='feature-options')
+                if feature_options_div:
+                    sku_single_choice = feature_options_div.find_all('a', class_='feature-option')
+            # 2.图片按钮选择
+            feature_group_buttons_image = soup.find('div', class_='feature-group',
+                                                    attrs={'data-test': 'feature-group-buttons-images'})
+            if sku_single_choice is None and feature_group_buttons_image:
+                feature_options_div = feature_group_buttons_image.find('div', class_='feature-options')
+                if feature_options_div:
+                    sku_single_choice = feature_options_div.find_all('a', class_='feature-option')
+            # 3.下拉选择
+            feature_group_select_list = soup.find('div', class_='feature-group')
+            if feature_group_select_list:
+                feature_options_div = feature_group_select_list.find('div', class_='feature-options')
+                if feature_options_div:
+                    sku_list = feature_options_div.find_all('a', class_='feature-list__item')
+            # 4.普通按钮选择
+            feature_group_button = soup.find('div', class_='feature-group')
+            if sku_single_choice is None and feature_group_button:
+                feature_options_div = feature_group_button.find('div', class_='feature-options')
+                if feature_options_div:
+                    sku_single_choice = feature_options_div.find_all('a', class_='feature-option')
+            # 5.图片按钮选择
+            feature_group_dropdown = soup.find('div', class_='feature-group',
+                                               attrs={'data-test': 'feature-group-dropdown'})
+            if feature_group_dropdown:
+                feature_options_div = feature_group_dropdown.find('div', class_='feature-list__options',
+                                                                  attrs={'data-test': 'feature-options'})
+                if feature_options_div:
+                    sku_span_all = feature_options_div.find_all('a', class_='feature-list__item')
+
+            if sku_list and len(sku_list) > 0:
+                parse_sku_list(sku_list, product, context)
+            elif sku_single_choice and len(sku_single_choice) > 0:
+                parse_sku_options(sku_single_choice, soup, product, context)
+            elif sku_span_all and len(sku_span_all) > 0:
+                for sku in sku_span_all:
+                    sku_page = None
+                    try:
+                        sku_span = sku.find('span', class_='')
+                        sku_name = None
+                        if not sku_span:
+                            sku_name = sku_span.get_text()
+                        product.sku = sku_name
+                        sku_page = parse_sku_page(sku, context, product)
+                    except Exception as e:
+                        logger.error(f'sku page parser error:{e}', exc_info=True)
+                    finally:
+                        if sku_page:
+                            sku_page.close()
             else:
                 parse_brand(soup, product)
                 parse_product_ean(product_page, product)
@@ -316,12 +388,75 @@ def parse_product_page(page, context, product_sort, city, level_1_name, level_2_
                 product.product_image = product_main_image
                 parse_discount_price(soup)
                 original_price = parse_discount_price(soup)
+                parse_buy_info(soup, product)
                 parse_product(product, soup, original_price)
+
+        # # 等待目标父容器加载
+        # sku_options = soup.find('div', class_='feature-options')
+        # sku_options_list = soup.find('div', class_='feature-list', attrs={'data-test': 'feature-list'})
+        # if sku_options:
+        #     # sku 分为下拉选形式的，和单选形式的
+        #     # 1.单选形式处理
+        #     sku_single_choice = product_page.locator("div.feature-options a.feature-option")
+        #     if sku_single_choice and sku_single_choice.count() > 0:
+        #         parse_sku_options(sku_single_choice, product, context)
+        #     # 2.下拉选形式处理
+        #     sku_list = product_page.locator("div.feature-options a.feature-list__item")
+        #     if sku_list and sku_list.count() > 0:
+        #         parse_sku_list(sku_list, product, context)
+        # # 3.带图片的下拉选格式
+        # elif sku_options_list:
+        #     sku_div = sku_options_list.find('div', class_='feature-list__options',
+        #                                     attrs={'data-test': 'feature-options'})
+        #     sku_all = sku_div.find_all('a', class_='feature-list__item')
+        #     # 遍历所有的未展示的sku列表数据
+        #     for sku in sku_all:
+        #         sku_span = sku.find('span', class_='')
+        #         sku_name = None
+        #         if not sku_span:
+        #             sku_name = sku_span.get_text()
+        #         product.sku = sku_name
+        #         sku_url = sku.get_attribute('href')
+        #         sku_page = context.new_page()
+        #         sku_page_url = BASE_URL + sku_url
+        #         sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
+        #         # 等待关键元素 + 随机滚动
+        #         sku_page.wait_for_selector('#mainContent', timeout=3000)
+        #         value = random.choice([True, False])
+        #         if value:
+        #             total_height = sku_page.evaluate("document.documentElement.scrollHeight")
+        #             smooth_scroll(page=sku_page, total_distance=random.randint(600, total_height))
+        #         sku_html = sku_page.content()
+        #         sku_soup = BeautifulSoup(sku_html, 'html.parser')
+        #         set_product_attrs(sku_soup, product)
+        # else:
+        #     parse_brand(soup, product)
+        #     parse_product_ean(product_page, product)
+        #     product_main_image = soup.find('img',
+        #                                    attrs={'data-test': 'product-main-image'}).get(
+        #         'src')
+        #     product.product_image = product_main_image
+        #     parse_discount_price(soup)
+        #     original_price = parse_discount_price(soup)
+        #     parse_buy_info(soup, product)
+        #     parse_product(product, soup, original_price)
+
         except Exception as e:
             logger.error(f'parse product error:{e}')
         finally:
             product_page.close()
-        product_sort += 1
+            product_sort += 1
+
+
+def set_product_attrs(soup, product):
+    """设置产品信息参数"""
+    product_main_image = soup.find('img', attrs={'data-test': 'product-main-image'}).get('src')
+    parse_brand(soup, product)
+    parse_product_ean(soup, product)
+    product.product_image = product_main_image
+    original_price = parse_discount_price(soup)
+    parse_buy_info(soup, product)
+    parse_product(product, soup, original_price)
 
 
 def parse_brand(soup, product):
@@ -340,6 +475,7 @@ def parse_sku_list(sku_list, product, context):
     """处理list项sku"""
     sku_count = sku_list.count()
     for i in range(sku_count):
+        sku_page = None
         try:
             # 点击刷新页面，需获取刷新后的页面的数据
             sku = sku_list.nth(i)
@@ -347,39 +483,19 @@ def parse_sku_list(sku_list, product, context):
             text_span = sku.query_selector('.feature-list__text span')
             sku_name = text_span.inner_text()
             product.sku = sku_name
-            sku_url = sku.get_attribute('href')
-            sku_page = context.new_page()
-            sku_page_url = BASE_URL + sku_url
-            sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
-            # 等待关键元素 + 随机滚动
-            sku_page.wait_for_selector('#mainContent', timeout=3000)
-            value = random.choice([True, False])
-            if value:
-                viewport_size = sku_page.viewport_size
-                height = viewport_size['height']
-                smooth_scroll(page=sku_page, total_distance=random.randint(600, height))
-            sku_html = sku_page.content()
-            sku_soup = BeautifulSoup(sku_html, 'html.parser')
-
-            product_main_image = sku_soup.find('img',
-                                               attrs={
-                                                   'data-test': 'product-main-image'}).get(
-                'src')
-            parse_brand(sku_soup, product)
-            parse_product_ean(sku_page, product)
-            product.product_image = product_main_image
-            original_price = parse_discount_price(sku_soup)
-            parse_product(product, sku_soup, original_price)
+            sku_page = parse_sku_page(sku, context, product)
         except Exception as e:
-            logger.error(f'sku page parser error:{e}')
+            logger.error(f'sku page parser error:{e}', exc_info=True)
         finally:
-            sku_page.close()
+            if sku_page:
+                sku_page.close()
 
 
-def parse_sku_options(sku_list, product, context):
+def parse_sku_options(sku_list, soup, product, context):
     """处理单选项sku"""
     sku_count = sku_list.count()
     for i in range(sku_count):
+        sku_page = None
         try:
             # 点击刷新页面，需获取刷新后的页面的数据
             sku = sku_list.nth(i)
@@ -387,10 +503,11 @@ def parse_sku_options(sku_list, product, context):
             time.sleep(random.uniform(0.5, 1.5))  # 给点缓冲时间
 
             sku_name = sku.get_attribute("title")
-
+            sku_btn = False
             sku_class = sku.get_attribute("class")
             if "feature-option--btn" in sku_class:
                 sku_name = sku.get_attribute("title")
+                sku_btn = True
             if "feature-option--image" in sku_class:
                 try:
                     sku_image = sku.locator("img")
@@ -402,33 +519,64 @@ def parse_sku_options(sku_list, product, context):
             if not sku_name:
                 sku_name = sku.get_attribute("data-test")
             product.sku = sku_name
-            sku_url = sku.get_attribute('href')
-            sku_page = context.new_page()
-            sku_page_url = BASE_URL + sku_url
-            sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
-            # 等待关键元素 + 随机滚动
-            sku_page.wait_for_selector('#mainContent', timeout=3000)
-            value = random.choice([True, False])
-            if value:
-                viewport_size = sku_page.viewport_size
-                height = viewport_size['height']
-                smooth_scroll(page=sku_page, total_distance=random.randint(600, height))
-            sku_html = sku_page.content()
-            sku_soup = BeautifulSoup(sku_html, 'html.parser')
+            all_feature_group = soup.find_all('div', class_='feature-group',
+                                              attrs={'data-test': 'feature-group-buttons-text'})
+            if sku_btn and all_feature_group is not None and len(all_feature_group) > 1:
+                level2_sku = all_feature_group[1]
+                for sku2 in level2_sku:
+                    sku_class = sku2.get_attribute("class")
+                    if "feature-option--btn" in sku_class:
+                        sku2_name = sku2.get_attribute("title")
+                        product.sku1 = sku2_name
+                        sku_page = parse_sku_page(sku2, context, product)
 
-            product_main_image = sku_soup.find('img',
-                                               attrs={
-                                                   'data-test': 'product-main-image'}).get(
-                'src')
-            parse_brand(sku_soup, product)
-            parse_product_ean(sku_page, product)
-            product.product_image = product_main_image
-            original_price = parse_discount_price(sku_soup)
-            parse_product(product, sku_soup, original_price)
+            else:
+                sku_page = parse_sku_page(sku, context, product)
         except Exception as e:
-            logger.error(f'sku page parser error:{e}')
+            logger.error(f'sku page parser error:{e}', exc_info=True)
         finally:
-            sku_page.close()
+            if sku_page:
+                sku_page.close()
+
+
+def parse_sku_page(sku, context, product) -> Page:
+    """解析某个具体的sku的页面信息，并保存对应sku的产品信息"""
+    sku_url = sku.get_attribute('href')
+    sku_page = context.new_page()
+    sku_page_url = BASE_URL + sku_url
+    sku_page.goto(sku_page_url, wait_until="load", timeout=20000)
+    # 等待关键元素 + 随机滚动
+    sku_page.wait_for_selector('#mainContent', timeout=3000)
+    value = random.choice([True, False])
+    if value:
+        # viewport_size = sku_page.viewport_size
+        # height = viewport_size['height']
+        total_height = sku_page.evaluate("document.documentElement.scrollHeight")
+        smooth_scroll(page=sku_page, total_distance=random.randint(600, total_height))
+    sku_html = sku_page.content()
+    sku_soup = BeautifulSoup(sku_html, 'html.parser')
+    set_product_attrs(sku_soup, product)
+    return sku_page
+
+
+def parse_buy_info(sku_soup, product):
+    """解析销售商及送达时间"""
+    buy_info = sku_soup.find('div', id='buy-block')
+    if not buy_info:
+        return
+    description_div = buy_info.find('div', attrs={'data-test': 'delivery-info'})
+    delivery_info = description_div.find_all('span')
+    if not delivery_info:
+        return
+    delivery_msg = delivery_info[0].get_text()
+    product.delivery_time = delivery_msg
+    sale_name_span = buy_info.find('span', class_='product-seller__name')
+    if sale_name_span:
+        product.vendor = sale_name_span.get_text()
+    else:
+        sale_name_div = buy_info.find('div', class_='product-seller product-seller--l')
+        if not sale_name_div:
+            product.vendor = sale_name_div.get_text().replace('Verkoop door', '').replace(' ', '')
 
 
 def parse_product_ean(page, product):
